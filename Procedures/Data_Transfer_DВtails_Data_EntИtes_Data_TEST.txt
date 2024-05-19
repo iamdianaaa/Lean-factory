@@ -1,0 +1,124 @@
+USE [LFY_Master_Data_DB]
+GO
+
+/****** Object:  StoredProcedure [dbo].[Data_Transfer_Détails_Data_Entêtes_Data_TEST]    Script Date: 10/05/2024 01:55:28 ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+
+/********************************************************************************************/
+/* Author:		Barseghyane Anna, Kharatyan Gayane                                          */
+/* Create date: 03/03/2023                                                                  */
+/* Descripion : transférer ,charger  des données brutes de tikets modifié vers la table     */
+/*              Entete data en effectuant des modifications et des agrégations de données   */
+/********************************************************************************************/
+/* Modification History																		*/
+/* Author:				Mkrtchyan Diana, Mkrtchyan Andriana                                 */
+/* Modification date:   08/05/2024                                                          */
+/* Descripion :			Changed occurences of Table_Id to Docking_Table_Id					*/
+/*						from NRM_Donnees_Brutes												*/
+/********************************************************************************************/
+
+CREATE PROC [dbo].[Data_Transfer_Détails_Data_Entêtes_Data_TEST] @Donnees_Brutes_Id BIGINT
+
+AS
+
+/* Variables locales */
+       DECLARE @Docking_Tables_Id BIGINT
+       DECLARE @Contenu NVARCHAR(MAX)
+       DECLARE @Regex_Translation NVARCHAR(MAX)
+       DECLARE @Ced NVARCHAR(400)  -- Clé "CLT_Entêtes_Data" dans REGEX_TRANSLATION
+       DECLARE @Cdd NVARCHAR(400)  -- Clé "CLT_Détail_Data" dans REGEX_TRANSLATION
+       DECLARE @Error_code NVARCHAR(3)
+	   DECLARE @Nom_fonction NVARCHAR(250)
+	   DECLARE @Nom_Client NVARCHAR(250)
+	   DECLARE @URL_Cmpl NVARCHAR(MAX)
+	   DECLARE @DateTrt DATE
+
+
+/* STEP 1 : Initialisation du traitement */
+/* La description de format de données et de contrôle et le contenu viennent de la table Données Brutes */
+       SELECT @Docking_Tables_Id = Docking_Table_Id, @Contenu = Contenu, @DateTrt = [Date] FROM NRM_Donnees_Brutes WHERE Id = @Donnees_Brutes_Id 
+
+/* Les règles de contrôle et de achage des données en entrée sont liées à docking_table */ 
+		
+       SELECT @Regex_Translation = dt.Regex_Translation, @Nom_Client = c.NOM, @URL_Cmpl = dt.URL_Cmpl
+	     FROM MDT_Docking_Tables AS dt INNER JOIN MDT_Docking AS d ON d.Id = dt.Docking_Id
+	                                   INNER JOIN MDT_Clients AS c ON c.Id = d.Client_Id
+	    WHERE dt.Id = @Docking_Tables_Id
+
+/* Récupération des règles de traitement des données (configuration enregistrée dans MDT_Docking_Table) */ 
+	   SELECT @Ced = j1.[value] FROM OPENJSON(@Regex_Translation) AS j1 WHERE j1.[key] = 'CLT_Entêtes_Data'
+	   SELECT @Cdd = j1.[value] FROM OPENJSON(@Regex_Translation) AS j1 WHERE j1.[key] = 'CLT_Détails_Data'
+
+/* Log d'avancement : Début d'intégration */
+	     SET @Nom_fonction = OBJECT_NAME(@@PROCID)
+		 SET @Error_code = '300'
+		EXEC [dbo].[LFY_ADD_History_Entry] @Error_code, @Nom_fonction, @Nom_Client, @URL_Cmpl, @DateTrt
+
+
+/* DONNEES ENTETES */
+/* Phase 1 */
+IF dbo.IfMatches(@Regex_Translation, 'CLT_Entêtes_Data') = 1
+	BEGIN
+
+	/* Log d'avancement : Début d'intégration */
+		 SET @Error_code = '301'
+		EXEC [dbo].[LFY_ADD_History_Entry] @Error_code, @Nom_fonction, @Nom_Client, @URL_Cmpl, @DateTrt, 'Début'
+
+	/* Insertion */
+		INSERT INTO [dbo].[CLT_Entêtes_Data] ([Donnees_Brutes_Id], [RefNumber], [Date_soumission], [Date_résolution], [Date_clôture], [Date_prévue_clôture], [Bénéficiaire], [Demandeur], [Description], [Commentaire])
+
+		SELECT * 
+		   FROM (
+			SELECT Donnees_Brutes_Id, Ticket_Id, [value] AS valeur, MAX(Valeur_Du_Champ) AS Valeur_Du_Champ 
+			  FROM(SELECT * FROM [dbo].[NRM_Données_Modifiées_TEST] WHERE Donnees_Brutes_Id = @Donnees_Brutes_Id) AS a INNER JOIN OPENJSON(@Ced) AS j ON a.Sous_Nom_Du_Champ = j.[key] COLLATE DATABASE_DEFAULT
+	
+		  GROUP BY Donnees_Brutes_Id, Ticket_Id, [value]) AS t
+
+		  PIVOT(MIN(Valeur_Du_Champ) FOR valeur IN ([Date_soumission], [Date_résolution], [Date_clôture], [Date_prévue_clôture], [Bénéficiaire], [Demandeur], [Description], [Commentaire])) AS pivot_table;
+
+	 	/* Log d'avancement : Début d'intégration */
+		 SET @Error_code = '302'
+		EXEC [dbo].[LFY_ADD_History_Entry] @Error_code, @Nom_fonction, @Nom_Client, @URL_Cmpl, @DateTrt, 'Fin'
+	END
+
+
+/* DONNEES DETAIL */ 
+/* Phase 1 : Insertion en table Détail */
+    IF dbo.IfMatches(@Regex_Translation, 'CLT_Détails_Data') = 1
+	BEGIN
+
+		INSERT INTO [dbo].[CLT_Détails_Data]([Entête_Id], [Donnees_Brutes_Id], [Date_soumission], [Date_clôture], [Date_prévue_clôture], [Statut], [Groupe_opérateur], [Opérateur], [Type_Action], [Temps], [Centre_de_service_Id], [Description], [Commentaire])
+
+		SELECT a.Id, a.Donnees_Brutes_Id, a.Date_soumission, a.Date_clôture, a.Date_prévue_clôture, 
+				  Min(Case [value] When 'Statut' Then Valeur_Du_Champ End) Statut,
+				  Min(Case [value] When 'Groupe_opérateur' Then Valeur_Du_Champ End) Groupe_opérateur,
+				  Min(Case [value] When 'Operateur' Then Valeur_Du_Champ End) Operateur,
+				  Min(Case [value] When 'Type_Action' Then Valeur_Du_Champ End) Type_Action,
+				  Min(Case [value] When 'Temps' Then Valeur_Du_Champ End) Temps,
+				  Min(Case [value] When 'Centre_de_service_Id' Then Valeur_Du_Champ End) Centre_de_service_Id,
+				  Min(Case [value] When 'Description' Then Valeur_Du_Champ End) [Description],
+				  Min(Case [value] When 'Commentaire' Then Valeur_Du_Champ End) Commentaire
+
+		  FROM (SELECT  Id, Donnees_Brutes_Id, RefNumber, Date_soumission, Date_clôture, Date_prévue_clôture
+				  FROM [CLT_Entêtes_Data]) AS a INNER JOIN [NRM_Données_Modifiées_TEST] AS b ON a.Donnees_Brutes_Id = b.Donnees_Brutes_Id AND a.RefNumber = b.Ticket_Id
+												      JOIN OPENJSON(@Cdd) AS c ON b.Sous_Nom_Du_Champ = c.[key] COLLATE DATABASE_DEFAULT
+													  --La différence avec la procedure Data_Transfer_Détails_Data_Entêtes_Data_OBS
+													  --est la jointure des table utilisant la variable Sous_Nom_Du_Champ
+													  --au lieu de Nom_Du_Champ
+		 GROUP BY a.Donnees_Brutes_Id, a.Id, a.Date_soumission, a.Date_clôture, a.Date_prévue_clôture, b.Record_Id
+		 ORDER BY a.Id, b.Record_Id   
+	END
+
+/* Log d'avancement : Fin d'intégration */
+	 SET @Error_code = '399'
+	EXEC [dbo].[LFY_ADD_History_Entry] @Error_code, @Nom_fonction, @Nom_Client, @URL_Cmpl, @DateTrt
+GO
+
+

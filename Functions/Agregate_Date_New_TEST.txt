@@ -1,0 +1,39 @@
+USE [LFY_Master_Data_DB]
+GO
+
+/****** Object:  UserDefinedFunction [dbo].[Agregate_Date_New_TEST]    Script Date: 10/05/2024 02:02:54 ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+-- =============================================
+-- Author:		Stéphane DEZAIRE
+-- Create date: 03/05/2023
+-- Description:	Agrège les données présentes en Ticket_Modifié selon une règle définie dans DockingTable sous format JSON
+-- =============================================
+CREATE FUNCTION [dbo].[Agregate_Date_New_TEST] (@Donnees_Brutes_Id BIGINT, @Record_Id BIGINT, @Cdt NVARCHAR(1000), @DtName NVARCHAR(250), @Separateur NVARCHAR(1) )
+RETURNS NVARCHAR(10)
+AS
+BEGIN
+
+/* Variables locales */
+	DECLARE @DatV NVARCHAR(10) = ''
+	DECLARE @Sep NVARCHAR(1) = ''
+
+
+/* Reconstruction des dates au format AAAA-MM-JJ (éclatées en 3 enregistrements JJ, MM, AA) */
+		SELECT @Datv = @Datv + @Sep + Valeur_Du_Champ, @Sep = @Separateur 
+		  FROM [NRM_Données_Modifiées_TEST] AS a INNER JOIN [dbo].[Unique_JSON_Keys](@Cdt) AS b ON a.Sous_Nom_Du_Champ = b.value COLLATE DATABASE_DEFAULT
+		 WHERE Donnees_Brutes_Id = @Donnees_Brutes_Id AND Record_Id = @Record_Id AND KeyName = @DtName
+
+/* Renvoi de la donnée reconstruite */
+	RETURN @DatV
+
+END
+GO
+
+

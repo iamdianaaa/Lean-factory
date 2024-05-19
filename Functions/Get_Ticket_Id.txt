@@ -1,0 +1,72 @@
+USE [LFY_Master_Data_DB]
+GO
+
+/****** Object:  UserDefinedFunction [dbo].[Get_Ticket_Id]    Script Date: 10/05/2024 10:24:57 ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+CREATE FUNCTION [dbo].[Get_Ticket_Id] (@data_table Donnees_Brutes_Data_Type_New READONLY, @Format NVARCHAR(50), @clé NVARCHAR(400), @Date_Format INT )
+RETURNS @Table_With_Ticket_Id TABLE (
+    clé NVARCHAR(400),
+    valeur NVARCHAR(400),
+    Id BIGINT,
+    Ticket_Id NVARCHAR(100)
+)
+AS
+BEGIN
+
+	-- Déclaration des variables locales
+	DECLARE @ForXXX NVARCHAR(50);
+	DECLARE @Ticket_Id NVARCHAR(100);
+	DECLARE @NRM_DATE DATE;
+
+	-- Calcul de la longueur de l'indice du format
+	DECLARE @IdxLength INT;
+	SET @IdxLength = LEN(@Format) - LEN(REPLACE(@Format, 'x', ''));
+	
+	-- Extraction de la partie "XXX" du format
+	SET @ForXXX = SUBSTRING(@Format, CHARINDEX('-', @Format) + 1, LEN(@Format) - CHARINDEX('-', @Format));
+
+	-- Déclaration des variables pour l'itération
+	DECLARE @Id BIGINT, @RowNum INT;
+
+	-- Déclaration du curseur pour parcourir les données brutes, normalization de date et convertion
+	DECLARE TicketCursor CURSOR FOR
+	SELECT t.Id, ROW_NUMBER() OVER (ORDER BY t.Id) AS RowNum, CONVERT(DATE, REPLACE(REPLACE(substring(LTRIM(RTRIM(t.valeur)), 1, 10), '/', '-'), '.', '-'), @Date_Format)
+	FROM @data_table t 
+	WHERE t.clé = @clé AND t.valeur <> '';
+	
+	OPEN TicketCursor;
+	-- Récupération de la première ligne de données
+	FETCH NEXT FROM TicketCursor INTO @Id, @RowNum, @NRM_DATE;
+
+
+	WHILE @@FETCH_STATUS = 0
+	BEGIN
+		-- Insertion des données traitées dans la table de sortie
+		INSERT INTO @Table_With_Ticket_Id (clé, valeur, Id, Ticket_Id)
+		SELECT t.clé, t.valeur, @Id, 
+		    -- Génération de l'identifiant de ticket en remplaçant les parties du format
+			REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(@Format, @ForXXX, RIGHT('0000000000000000000' + CAST(@RowNum AS NVARCHAR(MAX)), @IdxLength)), 'DD', RIGHT('0' + CONVERT(NVARCHAR, DAY(@NRM_DATE)), 2)), 'MM', RIGHT('0' + CONVERT(NVARCHAR, MONTH(@NRM_DATE)), 2)), 'YY', RIGHT(CONVERT(NVARCHAR, YEAR(@NRM_DATE)), 2)), 'YYYY', CONVERT(NVARCHAR, YEAR(@NRM_DATE)))
+		FROM @data_table tti
+		LEFT JOIN @data_table t ON t.Id = tti.Id
+		WHERE tti.Id = @Id and tti.clé = @clé
+
+		-- Récupération de la ligne suivante
+		FETCH NEXT FROM TicketCursor INTO @Id, @RowNum, @NRM_DATE;
+	END
+
+	CLOSE TicketCursor;
+	DEALLOCATE TicketCursor;
+
+
+	RETURN;
+END;
+GO
+
+

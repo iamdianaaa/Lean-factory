@@ -1,0 +1,384 @@
+USE [LFY_Master_Data_DB]
+GO
+
+/****** Object:  StoredProcedure [dbo].[Data_Transformation_Insertion_Données_Modifiées]    Script Date: 10/05/2024 10:32:15 ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+
+
+/********************************************************************************************/
+-- Author:  Anna BARSEGHYAN, Gayane KHARATYAN, Stéphane DEZAIRE
+-- Create date: 24/03/2023
+-- Description : Chargement tickets modifiés
+/********************************************************************************************/
+/* Modification History																		*/
+/* Author:				Diana MKRTCHYAN, Andriana MKRTCHYAN                                 */
+/* Modification date:   20/03/2024                                                          */
+/* Descripion :			Changed occurences of Table_Id to Docking_Table_Id					*/
+/*						from NRM_Donnees_Brutes												*/
+/*						Function was added for getting regex								*/
+/********************************************************************************************/
+/* Modification History																		*/
+/* Author:				Andriana MKRTCHYAN, Diana MKRTCHYAN									*/
+/* Modification date:   26/04/2024                                                          */
+/* Descripion :			Changed the joining column of tables in Step 8				        */
+/*						to the function Agregate_Date										*/
+/********************************************************************************************/
+/* Modification History																		*/
+/* Author:				Andriana MKRTCHYAN, Diana MKRTCHYAN	 												*/
+/* Modification date:   26/04/2024                                                          */
+/* Descripion :			Changed the insertion of columns in Step 7 in 				        */
+/*						order that columns Nom_Du_Champ and Sous_Nom_Du_Champ are			*/
+/*						correctly generated in NRM_Données_Modifiées						*/
+/********************************************************************************************/
+/* Modification History																		*/
+/* Author:				Andriana MKRTCHYAN, Diana MKRTCHYAN	   												*/
+/* Modification date:   08/05/2024                                                          */
+/* Descripion :			Added variable @Date_Format to be used in Step 8 as parameter       */
+/*						to the function Agregate_Date										*/
+/********************************************************************************************/
+
+
+CREATE PROC [dbo].[Data_Transformation_Insertion_Données_Modifiées] @Donnees_Brutes_Id bigint
+AS
+
+       DECLARE @Docking_Tables_Id BIGINT
+       DECLARE @Contenu NVARCHAR(MAX)
+       DECLARE @Regex_Translation NVARCHAR(MAX)
+       DECLARE @Schéma_converti NVARCHAR(MAX)
+       DECLARE @Valeurs_conversion NVARCHAR(MAX)
+       DECLARE @Vtr NVARCHAR(MAX)  -- Clé VTR dans REGEX_TRANSLATION
+       DECLARE @Vrp NVARCHAR(MAX)  --
+       DECLARE @Tpr NVARCHAR(MAX)  --
+       DECLARE @Rir NVARCHAR(MAX)  --
+       DECLARE @Clp NVARCHAR(MAX)  --
+	   DECLARE @Vlp NVARCHAR(MAX)  --
+       DECLARE @Ced NVARCHAR(MAX)  --
+	   DECLARE @Format NVARCHAR(MAX)  --
+       DECLARE @Error_code NVARCHAR(3)
+	   DECLARE @Nom_fonction NVARCHAR(250)
+       DECLARE @table_variable Donnees_Brutes_Data_Type_New
+	   DECLARE @Nom_Client NVARCHAR(250)
+	   DECLARE @URL_Cmpl NVARCHAR(MAX)
+	   DECLARE @DateTrt DATE
+	   DECLARE @Separator NVARCHAR(1) = '-' -- Separator pour agregate date
+	   DECLARE @Date_Format INT -- Formate de date dans les données brutes
+	 
+
+
+/* STEP 1 : Initialisation du traitement */
+/* La description de format de données et de contrôle et le contenu viennent de la table Données Brutes */
+       SELECT @Docking_Tables_Id = Docking_Table_Id, @Contenu = Contenu, @DateTrt = [Date] FROM NRM_Donnees_Brutes WHERE Id = @Donnees_Brutes_Id 
+
+/* Les règles de contrôle et de achage des données en entrée sont liées à docking_table */ 
+       SELECT @Regex_Translation = dt.Regex_Translation, @Nom_Client = c.NOM, @URL_Cmpl = dt.URL_Cmpl, @Schéma_converti = dt.Schéma_converti, @Valeurs_conversion = dt.Valeurs_Conversion
+	     FROM MDT_Docking_Tables AS dt INNER JOIN MDT_Docking AS d ON d.Id = dt.Docking_Id
+	                                   INNER JOIN MDT_Clients AS c ON c.Id = d.Client_Id
+	    WHERE dt.Id = @Docking_Tables_Id
+
+/* Log d'avancement : Début d'intégration */
+	     SET @Nom_fonction = OBJECT_NAME(@@PROCID)
+		 SET @Error_code = '200'
+		EXEC [dbo].[LFY_ADD_History_Entry] @Error_code, @Nom_fonction, @Nom_Client, @URL_Cmpl, @DateTrt
+		
+
+/* STEP 2 : NORMALISATION DU CONTENU EN ENTREE */
+/* Etape de restructuration du JSON attendue (O/N) */
+       IF dbo.IfMatches(@Regex_Translation, 'Change_Json_Construction') = 1
+
+       BEGIN
+			  /* Log d'avancement */
+			     SET @Error_code = '201'
+				EXEC [dbo].[LFY_ADD_History_Entry] @Error_code, @Nom_fonction, @Nom_Client, @URL_Cmpl, @DateTrt, 'Début'
+
+              /* Nettoyage primaire du contenu : Suppression des CR/LF, des tuples de SPACE */
+              /* Certains contenus externes arrivent dans un format non compatible avec les fonctions T-SQL */
+              SELECT @Contenu = REPLACE(REPLACE(REPLACE(REPLACE(@contenu, ' "', '"'), '" ', '"'), CHAR(13) + CHAR(10), ''),'{ ', '{' )
+
+              /* Application des règles de normalisation */
+              SELECT @Vtr = j2.[value] FROM OPENJSON(@Regex_Translation) AS j1 CROSS APPLY OPENJSON(j1.[value]) AS j2 WHERE j2.[key] = 'vtr'
+              SELECT @Vrp = j2.[value] FROM OPENJSON(@Regex_Translation) AS j1 CROSS APPLY OPENJSON(j1.[value]) AS j2 WHERE j2.[key] = 'vrp'
+
+              /* Application des règles de normalisation */
+              SELECT @Contenu = REPLACE(@Contenu, @Vtr, @Vrp)
+
+			  /* Log d'avancement */
+			     SET @Error_code = '201'
+			    EXEC [dbo].[LFY_ADD_History_Entry] @Error_code, @Nom_fonction, @Nom_Client, @URL_Cmpl, @DateTrt, 'Fin'
+       END
+
+
+/* STEP 3 : INITIALISATION DES PARAMETRES D'EXECUTION : LISTE DES REGEX à appliquer colonne par colonne */
+/* Vérification Regex_Translation => Format JSON Table attendu */
+       IF dbo.IfMatches(@Regex_Translation, 'Read_JSON_File') = 1
+
+       BEGIN
+
+			  /* Log d'avancement */
+			     SET @Error_code = '202'
+			    EXEC [dbo].[LFY_ADD_History_Entry] @Error_code, @Nom_fonction, @Nom_Client, @URL_Cmpl, @DateTrt, 'Début'
+
+              /* Application des règles de normalisation */
+
+				SET @Tpr = dbo.Get_Regex_Pattern(@Regex_Translation, 'Ticket_Path_RegEx')
+				SET @Rir = dbo.Get_Regex_Pattern(@Regex_Translation, 'Record_Id_RegEx')
+
+              /* Construction liste des REGEX à appliquer sur chaque colonne des données entrantes */
+              INSERT INTO @table_variable 
+				  SELECT CAST(Ticket_Path_Code AS NVARCHAR(MAX)) AS Clé, 
+						 CAST(valeur AS NVARCHAR(MAX)) AS valeur, 
+						 Record_Id, 
+						 NULL AS ValNull 
+					FROM dbo.Read_JSON_File(@contenu, @Tpr, @Rir)
+			  
+			  /* Log d'avancement */
+			     SET @Error_code = '202'
+			    EXEC [dbo].[LFY_ADD_History_Entry] @Error_code, @Nom_fonction, @Nom_Client, @URL_Cmpl, @DateTrt, 'Fin'
+       END
+
+
+/* STEP 4 : INITIALISATION DES PARAMETRES D'EXECUTION : Génération des IDs manquants (cas du SVI par ex.) */
+       IF dbo.IfMatches(@Regex_Translation, 'Get_Ticket_Id') = 1
+       BEGIN
+			  /* Log d'avancement */
+  			     SET @Error_code = '203'
+			    EXEC [dbo].[LFY_ADD_History_Entry] @Error_code, @Nom_fonction, @Nom_Client, @URL_Cmpl, @DateTrt, 'Début'
+
+              /*  Variable */
+              SELECT @Clp = j2.[value] FROM OPENJSON(@Regex_Translation) j1 CROSS APPLY OPENJSON(j1.[value]) j2 WHERE j2.[key] = 'Clé_Partition'
+              SELECT @Vlp = j2.[value] FROM OPENJSON(@Regex_Translation) j1 CROSS APPLY OPENJSON(j1.[value]) j2 WHERE j2.[key] = 'Valeur_Partition'
+			  SELECT @Format = j2.[value] FROM OPENJSON(@Regex_Translation) j1 CROSS APPLY OPENJSON(j1.[value]) j2 WHERE j2.[key] = 'Format'
+			  SELECT @Date_Format = j2.[value] FROM OPENJSON(@Regex_Translation) j1 CROSS APPLY OPENJSON(j1.[value]) j2 WHERE j2.[key] = 'Date_Format'
+              /* Ajout des id générés automatiquement */
+              UPDATE @table_variable 
+				 SET Ticket_Id = New_Ticket_Id 
+				 FROM 
+					(SELECT clé, 
+							valeur, 
+							Id AS Id_New, 
+							Ticket_Id AS New_Ticket_Id 
+					   FROM [dbo].[Get_Ticket_Id](@table_variable, @Format, @Clp, @Date_Format)) AS new_table 
+				WHERE Id = Id_New
+
+
+			;WITH CTE AS (
+				SELECT
+					clé,
+					valeur,
+					Id,
+					Ticket_Id,
+					MAX(Ticket_Id) OVER (ORDER BY Id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS Prev_Ticket_Id
+				FROM
+					@table_variable
+			)
+			UPDATE T
+			SET T.Ticket_Id = C.Prev_Ticket_Id
+			FROM
+				@table_variable T
+			INNER JOIN
+				CTE C ON T.Id = C.Id
+			WHERE
+				T.Ticket_Id IS NULL
+				
+			  /* Log d'avancement */
+  			  SET @Error_code = '203'
+			  EXEC [dbo].[LFY_ADD_History_Entry] @Error_code, @Nom_fonction, @Nom_Client, @URL_Cmpl, @DateTrt, 'Fin'
+       END
+
+
+/* STEP 5 : TRAITEMENT : Chargement par défaut des colonnes vides */
+       IF dbo.IfMatches(@Regex_Translation, 'Fill_Missing_Values') = 1
+       BEGIN
+			/* Log d'avancement */
+               SET @Error_code = '204'
+			  EXEC [dbo].[LFY_ADD_History_Entry] @Error_code, @Nom_fonction, @Nom_Client, @URL_Cmpl, @DateTrt, 'Début'
+
+			/*  */
+            SELECT @Clp = j2.[value] FROM OPENJSON(@Regex_Translation) j1 CROSS APPLY OPENJSON(j1.[value]) j2 WHERE j2.[key] = 'Clé_Partition'
+            SELECT @Vlp = j2.[value] FROM OPENJSON(@Regex_Translation) j1 CROSS APPLY OPENJSON(j1.[value]) j2 WHERE j2.[key] = 'Valeur_Partition'
+
+            /* Mise à jour des colonnes vides */
+            UPDATE @table_variable 
+               SET valeur = New_valeur FROM (SELECT clé New_clé, valeur AS New_valeur, Id AS Id_New, Ticket_Id AS New_Ticket_Id 
+                                               FROM dbo.Fill_Missing_Values(@table_variable, @Clp, @Vlp)) AS new_table
+                                      WHERE Id = Id_New AND clé = @Clp
+
+			/* Log d'avancement */
+               SET @Error_code = '204'
+			  EXEC [dbo].[LFY_ADD_History_Entry] @Error_code, @Nom_fonction, @Nom_Client, @URL_Cmpl, @DateTrt, 'Fin'
+       END
+
+
+/* STEP 6 : TRAITEMENT : Conversion des colonnes (type Date en format AAAA/MM/JJ) */
+       IF dbo.IfMatches(@Regex_Translation, 'Transform_General_Field') = 1
+       BEGIN
+			/* Log d'avancement */
+			   SET @Error_code = '205'
+			  EXEC [dbo].[LFY_ADD_History_Entry] @Error_code, @Nom_fonction, @Nom_Client, @URL_Cmpl, @DateTrt, 'Début'
+
+			/* Récupération valeur de la clé de partition */
+			SELECT @Clp = j2.[value] FROM OPENJSON(@Regex_Translation) AS j1 CROSS APPLY OPENJSON(j1.[value]) AS j2 WHERE j2.[key] = 'Clé_Partition'
+
+			/* Mise à jour des noms de colonnes */
+			UPDATE @table_variable 
+			   SET Ticket_Id = New_Ticket_Id FROM (SELECT clé, valeur, Id AS Id_New, Ticket_Id AS New_Ticket_Id 
+													 FROM dbo.Transform_General_Field(@table_variable, @Clp)) AS new_table
+											WHERE Id = Id_New
+			/* Log d'avancement */
+			   SET @Error_code = '205'
+			  EXEC [dbo].[LFY_ADD_History_Entry] @Error_code, @Nom_fonction, @Nom_Client, @URL_Cmpl, @DateTrt, 'Fin'
+       END
+
+
+
+/* STEP 7 : TRAITEMENT : Conversion puis intégration des données brutes dans le format normalisé (avant le format standardisé) */
+/* Log d'avancement */
+		SET @Error_code = '206'
+		EXEC [dbo].[LFY_ADD_History_Entry] @Error_code, @Nom_fonction, @Nom_Client, @URL_Cmpl, @DateTrt, 'Début';
+       
+/* Préparation données pour intégration après normalisation */
+	   WITH t(Donnees_Brutes_Id, Ticket_Id, Record_Id, Nom_Du_Champ, Valeur_Du_Champ) 
+         AS 
+         (SELECT @Donnees_Brutes_Id
+               , Ticket_Id
+               , a.Id
+               , b.value
+               , IIF(c.value IS NOT NULL, c.value, a.valeur) AS Valeur
+            FROM @table_variable AS a INNER JOIN [Unique_JSON_Keys](@Schéma_converti) AS b ON a.clé COLLATE DATABASE_DEFAULT = b.value
+                                       LEFT JOIN [Unique_JSON_Keys](@Valeurs_conversion) AS c ON a.valeur COLLATE DATABASE_DEFAULT = c.Keyname
+
+         ),
+
+		  /* J'ai changé INNER JOIN [Unique_JSON_Keys](@Schéma_converti) AS b ON a.clé COLLATE DATABASE_DEFAULT = b.KeyName to
+						INNER JOIN [Unique_JSON_Keys](@Schéma_converti) AS b ON a.clé COLLATE DATABASE_DEFAULT = b.value
+			parce que dans la variable '@table_variable' qui est reçu grace à la fonction  dbo.Transform_General_Field(@table_variable, @Clp)
+			le 'clé' contient juste le nom du champ est c'est le 'value' qui contient le chemin d'acces total aux données.
+			
+			est dans [Unique_JSON_Keys](@Schéma_converti), la colonne 'clé' est le chamin total aux données
+			*/
+
+/* Liste des REGEX à appliquer (e.g. éclatement des dates en trois données AAAA, MM, JJ) */
+       rl (clé, valeur)
+         AS 
+         (
+              SELECT j2.[key] AS clé,  j2.[value] AS valeur FROM OPENJSON(@Regex_Translation) j1 CROSS APPLY OPENJSON(j1.[value]) j2 WHERE j1.[key] = 'RegEx'
+         ),
+
+
+/* Chargement des données normalisées depuis la table temporaire */
+/* D'abord je garde toutes les données, en reservant la colonne Nom, après j'envoi les données vers la table données_modifiées sans la colonne Nom,
+	cela est fait pour faire la bonne concatenation de sous_nom_du_champ*/
+
+
+/* Partie NEW */ ------------------------------------------------------------------------------------------------------------
+
+		rb (Donnees_Brutes_Id, Ticket_Id, Record_Id, Nom, Nom_Du_Champ, Sous_Nom_Du_Champ, Valeur_Du_Champ) 
+		AS 
+		(
+		   SELECT Donnees_Brutes_Id
+				  , Ticket_Id
+				  , Record_Id
+				  , Nom
+				  , Nom_Du_Champ
+				  , IIF(Nom IS NOT NULL, CONCAT(Nom_Du_Champ, '_', Nom), Nom_Du_Champ) AS Sous_Nom_Du_Champ
+				  , IIF(rv.Pattern IS NOT NULL, dbo.GetMatch(Valeur_Du_Champ, rv.Pattern), Valeur_Du_Champ) AS Valeur_Du_Champ
+
+			 FROM t LEFT JOIN rl ON t.Nom_Du_Champ = rl.clé COLLATE DATABASE_DEFAULT
+					LEFT JOIN MDT_RegEx AS rv ON rl.valeur = rv.Id 
+		)
+
+		INSERT INTO NRM_Données_Modifiées ([Donnees_Brutes_Id], [Ticket_Id], [Record_Id], [Nom_Du_Champ], [Sous_Nom_Du_Champ],[Valeur_Du_Champ])
+			SELECT Donnees_Brutes_Id
+				  , Ticket_Id
+				  , Record_Id
+				  , Nom_Du_Champ
+				  , Sous_Nom_Du_Champ
+				  , Valeur_Du_Champ FROM rb ORDER BY Ticket_Id, Record_Id;
+------------------------------------------------------------------------------------------------------------
+
+
+
+
+/* Chargement des données normalisées depuis la table temporaire */
+/* Partie OLD */
+
+
+   --    INSERT INTO NRM_Données_Modifiées ([Donnees_Brutes_Id], [Ticket_Id], [Record_Id],  [Nom_Du_Champ], [Sous_Nom_Du_Champ], [Valeur_Du_Champ])
+   --    SELECT Donnees_Brutes_Id
+   --         , Ticket_Id
+   --         , Record_Id
+			--, Nom_Du_Champ
+			--, IIF(Nom IS NOT NULL, CONCAT(Nom_Du_Champ, '_', Nom), Nom_Du_Champ) AS Sous_Nom_Du_Champ
+			--, IIF(rv.Pattern IS NOT NULL, dbo.GetMatch(Valeur_Du_Champ, rv.Pattern), Valeur_Du_Champ) AS Valeur_Du_Champ
+
+   --      FROM t LEFT JOIN rl ON t.Nom_Du_Champ = rl.clé COLLATE DATABASE_DEFAULT
+   --             LEFT JOIN MDT_RegEx AS rv ON rl.valeur = rv.Id 
+
+   --    ORDER BY Ticket_Id, Record_Id;
+/* Partie OLD FIN */	   
+
+/* Log d'avancement */
+		SET @Error_code = '206'
+		EXEC [dbo].[LFY_ADD_History_Entry] @Error_code, @Nom_fonction, @Nom_Client, @URL_Cmpl, @DateTrt, 'Fin';
+
+
+
+/* STEP 8 : TRAITEMENT - Reconstruction de données (eg. dates en format AAAA-MM-JJ là où enregistrées en 3 parties AA, MM, JJ) */
+       IF dbo.IfMatches(@Regex_Translation, 'Agregate_Date') = 1
+       BEGIN
+
+		/* Log d'avancement */
+				SET @Error_code = '207'
+				EXEC [dbo].[LFY_ADD_History_Entry] @Error_code, @Nom_fonction, @Nom_Client, @URL_Cmpl, @DateTrt, 'Début';
+
+
+		/* Récupération valeur de la clé de partition */
+			SELECT @Ced = j1.[value] FROM OPENJSON(@Regex_Translation) AS j1 WHERE j1.[key] = 'Agregate_Date'
+			
+		/* Reconstruction des dates au format AAAA-MM-JJ (éclatées en 3 enregistrements JJ, MM, AA) */
+
+		/*Partie OLD*/------------------------------------------------------------------------------------------
+			--INSERT INTO NRM_Données_Modifiées([Donnees_Brutes_Id], [Ticket_Id], [Record_Id], [Nom_Du_Champ], [Valeur_Du_Champ])
+			--SELECT Donnees_Brutes_Id, Ticket_Id, Record_Id, j.KeyName AS Nom_Du_Champ, [dbo].[Agregate_Date_New](Donnees_Brutes_Id, Record_Id, @Ced, j.KeyName, @Separator) AS Valeur_Du_Champ
+			--  FROM [NRM_Données_Modifiées] AS t INNER JOIN dbo.Unique_JSON_Keys(@Ced) AS j ON t.Nom_Du_Champ LIKE (j.KeyName + '%') COLLATE DATABASE_DEFAULT
+			-- WHERE Donnees_Brutes_Id = @Donnees_Brutes_Id
+			-- GROUP BY Donnees_Brutes_Id, Ticket_Id, Record_Id, j.KeyName
+		/*Partie OLD*/------------------------------------------------------------------------------------------
+
+		/*Partie NEW*/
+		/*Ici je récupère le Nom_Du_Champ, qui existe déjà dans la table, au lieu de récupérer à nouveau le js.KeyName AS Nom_Du_Champ*/
+
+			INSERT INTO NRM_Données_Modifiées([Donnees_Brutes_Id], [Ticket_Id], [Record_Id], [Nom_Du_Champ], [Sous_Nom_Du_Champ], [Valeur_Du_Champ])
+			SELECT Donnees_Brutes_Id, Ticket_Id, Record_Id, Nom_Du_Champ, Nom_Du_Champ, [dbo].[Agregate_Date](Donnees_Brutes_Id, Record_Id, @Ced, js.KeyName, @Separator) AS Valeur_Du_Champ
+			  FROM NRM_Données_Modifiées
+		    INNER JOIN dbo.Unique_JSON_Keys(@Ced) AS js ON Nom_Du_Champ LIKE (js.KeyName + '%') COLLATE DATABASE_DEFAULT
+			 WHERE Donnees_Brutes_Id = @Donnees_Brutes_Id
+			 GROUP BY Donnees_Brutes_Id, Ticket_Id, Record_Id, Nom_Du_CHamp, js.KeyName
+
+
+
+		/* Log d'avancement */
+				SET @Error_code = '207'
+				EXEC [dbo].[LFY_ADD_History_Entry] @Error_code, @Nom_fonction, @Nom_Client, @URL_Cmpl, @DateTrt, 'Fin';
+		END       
+
+		/* Remise à NULL des valeurs de colonne "--" */
+			UPDATE NRM_Données_Modifiées
+			   SET Valeur_Du_Champ = IIF(Valeur_Du_Champ = '--', NULL, Valeur_Du_Champ)
+			 WHERE Donnees_Brutes_Id = @Donnees_Brutes_Id -- AND Nom_Du_Champ = 'Date_prévue_clôture'
+
+
+
+/* FIN DE TRAITEMENT */
+/* Log d'avancement : Fin d'intégration */
+	 SET @Error_code = '299'
+	EXEC [dbo].[LFY_ADD_History_Entry] @Error_code, @Nom_fonction, @Nom_Client, @URL_Cmpl, @DateTrt
+
+GO
+
+

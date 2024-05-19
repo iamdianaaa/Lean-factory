@@ -1,0 +1,84 @@
+USE [LFY_Master_Data_DB]
+GO
+
+/****** Object:  UserDefinedFunction [dbo].[Get_Ticket_Id_OBS]    Script Date: 10/05/2024 01:59:24 ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+--The function takes three arguments
+--1. String of JSON format
+--2. RegEx for extracting the path Record_Id (Specific to json construction, docking is extracted from configuration table)
+--3. RegEx for extracting the path Path (Specific to json construction, docking is extracted from configuration table)
+CREATE FUNCTION [dbo].[Get_Ticket_Id_OBS](
+	@data_table Donnees_Brutes_Data_Type READONLY,
+	@clé_partition varchar(100),
+	@valeur_partition varchar(100)
+)
+--Returns the previous table with filled in Ticket_Id
+    RETURNS @Table_With_Ticket_Id TABLE (
+        clé VARCHAR(400),
+        valeur VARCHAR(400),
+		Id bigint,
+        Ticket_Id bigint       
+    )
+AS
+BEGIN
+--Inserting everything from the table given as an argument to the function to the table we have to return
+--as we cannot modify the argument
+	insert into @Table_With_Ticket_Id
+	select * from @data_table
+
+    DECLARE 
+    @clé nvarchar(max), 
+    @valeur   nvarchar(max),
+	@New_Ticket_Id bigint,
+	@Ticket_Id bigint,
+	@Record_Id bigint;
+ 
+--Traversing the table using cursor
+set @New_Ticket_Id = 0
+DECLARE cursor_product CURSOR
+
+FOR SELECT 
+        clé, 
+        valeur,
+		Id
+    FROM 
+        @Table_With_Ticket_Id;
+
+OPEN cursor_product;
+
+FETCH NEXT FROM cursor_product INTO 
+    @clé, 
+    @valeur,
+	@Record_Id;
+
+WHILE @@FETCH_STATUS = 0
+    BEGIN
+--If the clé is the same as the partition key (field that separates tickets) the  @New_Ticket_Id is incremented
+		set @New_Ticket_Id = 
+			case when @clé=@clé_partition and @valeur !=  @valeur_partition then @New_Ticket_Id + 1
+			else @New_Ticket_Id
+			end 
+--			The table if updated and Ticket_Id = @New_Ticket_Id
+			update @Table_With_Ticket_Id
+			set Ticket_Id = @New_Ticket_Id
+			where Id = @Record_Id
+
+		FETCH NEXT FROM cursor_product INTO 
+            @clé, 
+			@valeur,
+			@Record_Id;
+    END;
+
+CLOSE cursor_product;
+
+   
+    RETURN;
+END;
+GO
+
+

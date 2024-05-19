@@ -1,0 +1,43 @@
+USE [LFY_Master_Data_DB]
+GO
+
+/****** Object:  UserDefinedFunction [dbo].[Read_JSON_File]    Script Date: 10/05/2024 02:01:57 ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+
+--The function takes three arguments
+--1. String of JSON format
+--2. RegEx for extracting the path Record_Id (Specific to json construction, docking is extracted from configuration table)
+--3. RegEx for extracting the path Path (Specific to json construction, docking is extracted from configuration table)
+CREATE FUNCTION [dbo].[Read_JSON_File] (@Donnees_brutes NVARCHAR(MAX), @Rgx_Cstr_Pth_1 NVARCHAR(MAX), @Rgx_Cstr_Pth_2 NVARCHAR(MAX))
+RETURNS TABLE
+AS
+RETURN
+
+--Use CTE for recursion 
+--Select idx, clé, valeur, row_num  from OPENJSON(@Donnees_brutes) 
+--Secursively append to JSonVal the results from CROSS APPLY OPENJSON(valeur) 
+--If valeur is a json object
+	WITH JSonVal (idx, clé, valeur, row_num ) 
+	AS (
+		SELECT 1,  [key], [value], CAST([key] AS NVARCHAR(MAX)) FROM OPENJSON(@Donnees_brutes) 
+		 UNION ALL
+		SELECT idx + 1, [key], [value], CAST(CONCAT(row_num , '_', CAST([key] AS NVARCHAR(MAX))) AS NVARCHAR(MAX))
+		  FROM JSonVal CROSS APPLY OPENJSON(valeur) 
+		 WHERE valeur LIKE '%{%:%}%'
+	   )
+
+--idx+1 adds to json depth level whenever a level is changed
+--We test for the value being a json object like this
+--Helps to avoid confusion with Globally Unique Identifier 
+	SELECT *, dbo.GetMatch(row_num, @Rgx_Cstr_Pth_1) AS Ticket_Path_Code, DBO.GetMatch(row_num, @Rgx_Cstr_Pth_2) AS Record_Id
+ 	  FROM JSonVal
+     WHERE valeur NOT LIKE '%{%:%}%'
+
+GO
+
+
